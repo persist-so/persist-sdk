@@ -1,0 +1,7 @@
+{
+  "name": "persist-sdk-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}
