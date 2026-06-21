@@ -10,10 +10,13 @@ declare global {
  */
 declare function decryptBlob(ciphertextBlob: Blob, rawAESKeyBase64: string): Promise<Blob>;
 type TokenGatedStatus = 'locked' | 'connecting' | 'decrypting' | 'unlocked';
+interface TokenGatedOptions {
+    apiUrl?: string;
+}
 /**
  * Headless hook to manage the Token Gating decryption flow
  */
-declare function useTokenGatedFile(cid: string): {
+declare function useTokenGatedFile(cid: string, options?: TokenGatedOptions): {
     status: TokenGatedStatus;
     error: string | null;
     fileUrl: string | null;
@@ -35,4 +38,4 @@ declare function TokenGatedFile({ cid, className, fileName, mimeType }: TokenGat
  */
 declare const PersistGatedImage: typeof TokenGatedFile;
 
-export { PersistGatedImage, TokenGatedFile, type TokenGatedStatus, decryptBlob, useTokenGatedFile };
+export { PersistGatedImage, TokenGatedFile, type TokenGatedOptions, type TokenGatedStatus, decryptBlob, useTokenGatedFile };

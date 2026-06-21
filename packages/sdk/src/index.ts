@@ -1,5 +1,6 @@
 import axios from 'axios';
 import * as fs from 'fs';
+import * as path from 'path';
 import * as crypto from 'crypto';
 
 export interface PersistConfig {
@@ -8,17 +9,40 @@ export interface PersistConfig {
 }
 
 export interface UploadOptions {
-  s3?: {
-    enabled?: boolean;
-    isPrivate?: boolean;
-    encrypted?: boolean;
-  };
-  web3?: {
-    ipfs?: boolean;
-    filecoin?: boolean;
-    arweave?: boolean;
-    encrypted?: boolean;
-  };
+  // Storage Tiers
+  isS3?: boolean;
+  isIpfs?: boolean;
+  isFilecoin?: boolean;
+  isArweave?: boolean;
+
+  // Web2 Options
+  isS3Private?: boolean;
+  s3UrlStyle?: 'random' | 'path';
+  isS3Encrypted?: boolean;
+
+  // Web3 Options
+  isIpfsDag?: boolean;
+  isIpfsUnwrapDir?: boolean;
+  isWeb3Encrypted?: boolean;
+  
+  // NFT Options
+  isNftCollection?: boolean;
+  nftCollectionName?: string;
+  nftDescription?: string;
+
+  // Token Gating Options
+  isTokenGated?: boolean;
+  accType?: 'nft' | 'token';
+  accContractAddress?: string;
+  accTokenIdOrBalance?: string;
+
+  // Batching & Folders
+  batchId?: string;
+  virtualPath?: string;
+  metadata?: Record<string, any>;
+  
+  // Callbacks
+  onProgress?: (progress: { loaded: number; total: number; percentage: number }) => void;
 }
 
 export class PersistClient {
@@ -43,90 +67,248 @@ export class PersistClient {
   }
 
   /**
-   * Upload a file to Persist (MinIO -> IPFS via Webhook)
+   * Upload a file to Persist (Handles Multipart for files > 5MB)
    */
   async upload(filePath: string, options: UploadOptions = {}) {
-    // Default configs to match dashboard defaults
-    const s3Enabled = options.s3?.enabled ?? true;
-    const s3Private = options.s3?.isPrivate ?? true;
-    const s3Encrypted = options.s3?.encrypted ?? false;
-    
-    const ipfsEnabled = options.web3?.ipfs ?? true;
-    const filecoinEnabled = options.web3?.filecoin ?? false;
-    const arweaveEnabled = options.web3?.arweave ?? false;
-    const web3Encrypted = options.web3?.encrypted ?? false;
-
     if (!fs.existsSync(filePath)) {
       throw new Error(`File not found: ${filePath}`);
     }
 
     const fileName = filePath.split(/[/\\]/).pop() || 'uploaded_file';
     const stat = fs.statSync(filePath);
-    const rawFileBuffer = fs.readFileSync(filePath);
+    const fileSize = stat.size;
     
-    let encryptedBuffer: Buffer | null = null;
-    let decryptionKey: string | null = null;
+    // Convert options to backend format
+    const payloadOpts = {
+      isS3: options.isS3 ?? true,
+      isS3Private: options.isS3Private ?? false,
+      isS3Encrypted: options.isS3Encrypted ?? false,
+      s3UrlStyle: options.s3UrlStyle || 'random',
+      
+      isIpfs: options.isIpfs ?? true,
+      isIpfsDag: options.isIpfsDag ?? false,
+      isIpfsUnwrapDir: options.isIpfsUnwrapDir ?? true,
+      isWeb3Encrypted: options.isWeb3Encrypted ?? false,
+      
+      isNftCollection: options.isNftCollection ?? false,
+      nftCollectionName: options.nftCollectionName || '',
+      nftDescription: options.nftDescription || '',
+      
+      isTokenGated: options.isTokenGated ?? false,
+      accType: options.accType || '',
+      accContractAddress: options.accContractAddress || '',
+      accTokenIdOrBalance: options.accTokenIdOrBalance || '',
+      
+      batchId: options.batchId || null,
+      virtualPath: options.virtualPath || '',
+      metadata: options.metadata || null,
+      
+      isFilecoin: options.isFilecoin ?? false,
+      isArweave: options.isArweave ?? false,
+    };
 
-    // 1. Generate Encrypted Payload if needed by either tier
-    if (s3Encrypted || web3Encrypted) {
+    let decryptionKey: string | null = null;
+    let web3UploadId: string | null = null;
+
+    // 1. Handle Encryption (Fallback to RAM for encrypted files)
+    let bufferToUpload: Buffer | null = null;
+    if (payloadOpts.isS3Encrypted || payloadOpts.isWeb3Encrypted) {
+      if (fileSize > 500 * 1024 * 1024) {
+        throw new Error("Client-side encryption is currently limited to files under 500MB to prevent memory crashes.");
+      }
+      const rawFileBuffer = fs.readFileSync(filePath);
       const key = crypto.randomBytes(32);
       const iv = crypto.randomBytes(12);
       const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
       const encrypted = Buffer.concat([cipher.update(rawFileBuffer), cipher.final()]);
       const authTag = cipher.getAuthTag();
       
-      encryptedBuffer = Buffer.concat([iv, authTag, encrypted]);
+      bufferToUpload = Buffer.concat([iv, authTag, encrypted]);
       decryptionKey = key.toString('hex');
-      console.log(`[Persist SDK] File encrypted locally. Keep this key safe: ${decryptionKey}`);
+      console.log(`[Persist SDK] File encrypted. Keep this key safe: ${decryptionKey}`);
     }
 
-    const dualUpload = (s3Enabled && !s3Encrypted) && (ipfsEnabled || filecoinEnabled || arweaveEnabled) && web3Encrypted;
+    const targetSize = bufferToUpload ? bufferToUpload.length : fileSize;
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB MinIO minimum
+    let finalUploadId = '';
 
-    // 2. Get Presigned URL(s)
-    const presignRes = await axios.post(`${this.apiUrl}/v1/upload/presign`, {
-      fileName,
-      dualUpload: dualUpload
-    }, { headers: this.headers });
+    // ==========================================
+    // 2. MULTIPART UPLOAD LOGIC (For files > 5MB)
+    // ==========================================
+    if (targetSize > CHUNK_SIZE) {
+      // 2a. Start Multipart
+      const startRes = await axios.post(`${this.apiUrl}/v1/upload/multipart/start`, { fileName }, { headers: this.headers });
+      const { uploadId, key } = startRes.data;
+      finalUploadId = key;
+      
+      const numParts = Math.ceil(targetSize / CHUNK_SIZE);
+      const partsArr = Array.from({ length: numParts }, (_, i) => i + 1);
 
-    const { presignedUrl, uploadId, web3PresignedUrl, web3UploadId } = presignRes.data;
+      // 2b. Get Presigned URLs for all parts
+      const presignRes = await axios.post(`${this.apiUrl}/v1/upload/multipart/presign`, {
+        key, uploadId, parts: partsArr
+      }, { headers: this.headers });
+      
+      const presignedUrls = presignRes.data.presignedUrls;
+      const completedParts: { ETag: string, PartNumber: number }[] = [];
+      let totalUploaded = 0;
 
-    // 3. Upload S3 Payload
-    if (s3Enabled) {
-      const payload = s3Encrypted ? encryptedBuffer! : rawFileBuffer;
-      await axios.put(presignedUrl, payload, {
-        headers: { 'Content-Type': 'application/octet-stream' },
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity
-      });
+      // 2c. Upload Chunks (Limit concurrency to 4)
+      const maxConcurrency = 4;
+      for (let i = 0; i < partsArr.length; i += maxConcurrency) {
+        const chunkBatch = partsArr.slice(i, i + maxConcurrency);
+        const promises = chunkBatch.map(async (partNumber) => {
+          const start = (partNumber - 1) * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE - 1, targetSize - 1);
+          
+          let chunkData: Buffer | fs.ReadStream;
+          if (bufferToUpload) {
+            chunkData = bufferToUpload.slice(start, end + 1);
+          } else {
+            chunkData = fs.createReadStream(filePath, { start, end });
+          }
+
+          const url = presignedUrls[partNumber];
+          const uploadRes = await axios.put(url, chunkData, {
+             headers: { 'Content-Type': 'application/octet-stream' },
+             maxBodyLength: Infinity,
+             maxContentLength: Infinity
+          });
+          
+          // ETag must be enclosed in quotes per S3 spec
+          const etag = uploadRes.headers.etag || uploadRes.headers.eTag;
+          completedParts.push({ ETag: etag.replace(/"/g, ''), PartNumber: partNumber });
+          
+          totalUploaded += (end - start + 1);
+          if (options.onProgress) {
+             options.onProgress({ loaded: totalUploaded, total: targetSize, percentage: Math.round((totalUploaded / targetSize) * 100) });
+          }
+        });
+        
+        await Promise.all(promises);
+      }
+      
+      completedParts.sort((a, b) => a.PartNumber - b.PartNumber);
+
+      // 2d. Complete Multipart
+      await axios.post(`${this.apiUrl}/v1/upload/multipart/complete`, {
+        key, uploadId, parts: completedParts
+      }, { headers: this.headers });
+
+    } else {
+      // ==========================================
+      // 3. STANDARD UPLOAD LOGIC (For files <= 5MB)
+      // ==========================================
+      const dualUpload = (payloadOpts.isS3 && !payloadOpts.isS3Encrypted) && (payloadOpts.isIpfs || payloadOpts.isFilecoin || payloadOpts.isArweave) && payloadOpts.isWeb3Encrypted;
+
+      const presignRes = await axios.post(`${this.apiUrl}/v1/upload/presign`, {
+        fileName, dualUpload
+      }, { headers: this.headers });
+
+      const { presignedUrl, uploadId, web3PresignedUrl, web3UploadId: w3Id } = presignRes.data;
+      finalUploadId = uploadId;
+      web3UploadId = w3Id;
+
+      if (payloadOpts.isS3) {
+        const payload = bufferToUpload || fs.createReadStream(filePath);
+        await axios.put(presignedUrl, payload, {
+          headers: { 'Content-Type': 'application/octet-stream' },
+          maxBodyLength: Infinity, maxContentLength: Infinity
+        });
+      }
+
+      if (dualUpload && web3PresignedUrl && web3UploadId) {
+        await axios.put(web3PresignedUrl, bufferToUpload, {
+          headers: { 'Content-Type': 'application/octet-stream' },
+          maxBodyLength: Infinity, maxContentLength: Infinity
+        });
+      }
     }
 
-    // 4. Upload Web3 Payload (if dual upload)
-    if (dualUpload && web3PresignedUrl && web3UploadId) {
-      await axios.put(web3PresignedUrl, encryptedBuffer!, {
-        headers: { 'Content-Type': 'application/octet-stream' },
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity
-      });
-    }
-
-    // 5. Finalize DB Entry
+    // 4. Finalize DB Entry
     const finalizeRes = await axios.post(`${this.apiUrl}/v1/upload/finalize`, {
-      uploadId,
+      uploadId: finalUploadId,
       fileName,
-      fileSize: stat.size,
-      isS3: s3Enabled,
-      isS3Private: s3Private,
-      isS3Encrypted: s3Encrypted,
-      isIpfs: ipfsEnabled,
-      isFilecoin: filecoinEnabled,
-      isArweave: arweaveEnabled,
-      isWeb3Encrypted: web3Encrypted,
-      web3UploadId: (dualUpload && web3UploadId) ? web3UploadId : null
+      fileSize: targetSize,
+      web3UploadId,
+      ...payloadOpts
     }, { headers: this.headers });
 
     return {
        ...finalizeRes.data,
        decryptionKey: decryptionKey || undefined
+    };
+  }
+
+  /**
+   * Upload an entire local directory to Persist.
+   * Auto-generates a batchId and preserves the relative folder structure.
+   */
+  async uploadDirectory(dirPath: string, options: UploadOptions = {}) {
+    if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+      throw new Error(`Directory not found or is not a directory: ${dirPath}`);
+    }
+
+    const batchId = Math.random().toString(36).substring(7);
+    const filesToUpload: string[] = [];
+
+    const traverse = (currentPath: string) => {
+      const items = fs.readdirSync(currentPath);
+      for (const item of items) {
+        const fullPath = path.join(currentPath, item);
+        if (fs.statSync(fullPath).isDirectory()) {
+          traverse(fullPath);
+        } else {
+          // Exclude hidden files or metadata sidecars if needed, 
+          // but for now we upload everything except .DS_Store
+          if (item !== '.DS_Store') {
+             filesToUpload.push(fullPath);
+          }
+        }
+      }
+    };
+
+    traverse(dirPath);
+
+    console.log(`[Persist SDK] Found ${filesToUpload.length} files in directory. Starting batch upload (Batch ID: ${batchId})...`);
+
+    const results = [];
+    const baseDirName = path.basename(dirPath);
+
+    // Limit concurrency to avoid network overload
+    const maxConcurrency = 4;
+    for (let i = 0; i < filesToUpload.length; i += maxConcurrency) {
+      const batch = filesToUpload.slice(i, i + maxConcurrency);
+      const promises = batch.map(async (filePath) => {
+         // Calculate relative path for IPFS DAG structure
+         // e.g. dirPath="my-folder", filePath="my-folder/sub/file.png" -> "my-folder/sub"
+         const relativePath = path.relative(dirPath, filePath);
+         const virtualPath = path.dirname(path.join(baseDirName, relativePath)).replace(/\\/g, '/');
+
+         const fileOptions: UploadOptions = {
+            ...options,
+            batchId,
+            virtualPath: virtualPath === '.' ? baseDirName : virtualPath
+         };
+
+         try {
+            const res = await this.upload(filePath, fileOptions);
+            return { filePath, success: true, data: res };
+         } catch (err: any) {
+            console.error(`[Persist SDK] Failed to upload ${filePath}:`, err.message);
+            return { filePath, success: false, error: err.message };
+         }
+      });
+
+      const batchResults = await Promise.all(promises);
+      results.push(...batchResults);
+    }
+
+    return {
+      batchId,
+      totalFiles: filesToUpload.length,
+      successfulUploads: results.filter(r => r.success).length,
+      results
     };
   }
 

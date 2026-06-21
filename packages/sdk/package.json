@@ -1,7 +1,7 @@
 {
   "name": "@persist-so-npm/sdk",
-  "version": "1.0.0",
-  "description": "The official Node.js SDK for Persist S3 & IPFS Storage",
+  "version": "1.1.0",
+  "description": "",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
@@ -9,14 +9,9 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
 
-  "keywords": ["ipfs", "s3", "storage", "web3", "persist"],
-  "author": "Persist <admin@persist.so>",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/persist-so/persist-sdk.git",
-    "directory": "packages/sdk"
-  },
-  "license": "MIT",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
     "@types/node": "^25.9.0",

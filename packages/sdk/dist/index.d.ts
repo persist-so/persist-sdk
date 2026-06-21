@@ -3,17 +3,31 @@ interface PersistConfig {
     apiUrl?: string;
 }
 interface UploadOptions {
-    s3?: {
-        enabled?: boolean;
-        isPrivate?: boolean;
-        encrypted?: boolean;
-    };
-    web3?: {
-        ipfs?: boolean;
-        filecoin?: boolean;
-        arweave?: boolean;
-        encrypted?: boolean;
-    };
+    isS3?: boolean;
+    isIpfs?: boolean;
+    isFilecoin?: boolean;
+    isArweave?: boolean;
+    isS3Private?: boolean;
+    s3UrlStyle?: 'random' | 'path';
+    isS3Encrypted?: boolean;
+    isIpfsDag?: boolean;
+    isIpfsUnwrapDir?: boolean;
+    isWeb3Encrypted?: boolean;
+    isNftCollection?: boolean;
+    nftCollectionName?: string;
+    nftDescription?: string;
+    isTokenGated?: boolean;
+    accType?: 'nft' | 'token';
+    accContractAddress?: string;
+    accTokenIdOrBalance?: string;
+    batchId?: string;
+    virtualPath?: string;
+    metadata?: Record<string, any>;
+    onProgress?: (progress: {
+        loaded: number;
+        total: number;
+        percentage: number;
+    }) => void;
 }
 declare class PersistClient {
     private apiKey;
@@ -21,9 +35,29 @@ declare class PersistClient {
     constructor(config: string | PersistConfig);
     private get headers();
     /**
-     * Upload a file to Persist (MinIO -> IPFS via Webhook)
+     * Upload a file to Persist (Handles Multipart for files > 5MB)
      */
     upload(filePath: string, options?: UploadOptions): Promise<any>;
+    /**
+     * Upload an entire local directory to Persist.
+     * Auto-generates a batchId and preserves the relative folder structure.
+     */
+    uploadDirectory(dirPath: string, options?: UploadOptions): Promise<{
+        batchId: string;
+        totalFiles: number;
+        successfulUploads: number;
+        results: ({
+            filePath: string;
+            success: boolean;
+            data: any;
+            error?: undefined;
+        } | {
+            filePath: string;
+            success: boolean;
+            error: any;
+            data?: undefined;
+        })[];
+    }>;
     /**
      * List files in your workspace
      */

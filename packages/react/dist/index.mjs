@@ -1,7 +1,6 @@
 // src/index.tsx
 import React, { useState, useEffect } from "react";
 import { BrowserProvider } from "ethers";
-var FIREBASE_URL = "https://us-central1-saas-ipfs.cloudfunctions.net";
 async function decryptBlob(ciphertextBlob, rawAESKeyBase64) {
   const rawKeyBytes = Uint8Array.from(atob(rawAESKeyBase64), (c) => c.charCodeAt(0));
   const cryptoKey = await window.crypto.subtle.importKey(
@@ -21,7 +20,8 @@ async function decryptBlob(ciphertextBlob, rawAESKeyBase64) {
   );
   return new Blob([decryptedBuffer]);
 }
-function useTokenGatedFile(cid) {
+function useTokenGatedFile(cid, options = {}) {
+  const apiUrl = options.apiUrl || "https://api.persist.so";
   const [status, setStatus] = useState("locked");
   const [error, setError] = useState(null);
   const [fileUrl, setFileUrl] = useState(null);
@@ -37,7 +37,7 @@ function useTokenGatedFile(cid) {
       const signer = await provider.getSigner();
       const address = await signer.getAddress();
       setStatus("decrypting");
-      const urlRes = await fetch(`${FIREBASE_URL}/generateDownloadUrl`, {
+      const urlRes = await fetch(`${apiUrl}/generateDownloadUrl`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data: { uploadId: cid } })
@@ -52,7 +52,7 @@ File: ${cid}
 Address: ${address}
 Timestamp: ${Date.now()}`;
       const signature = await signer.signMessage(message);
-      const kmsRes = await fetch(`${FIREBASE_URL}/retrieveKmsKey`, {
+      const kmsRes = await fetch(`${apiUrl}/retrieveKmsKey`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

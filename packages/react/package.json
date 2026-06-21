@@ -1,6 +1,6 @@
 {
   "name": "@persist-so-npm/react",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "React SDK for Persist Storage, including drop-in components for Token Gated files.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -9,14 +9,6 @@
     "build": "tsup src/index.tsx --format cjs,esm --dts",
     "dev": "tsup src/index.tsx --format cjs,esm --dts --watch"
   },
-  "keywords": ["react", "ipfs", "s3", "storage", "web3", "persist"],
-  "author": "Persist <admin@persist.so>",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/persist-so/persist-sdk.git",
-    "directory": "packages/react"
-  },
-  "license": "MIT",
   "peerDependencies": {
     "react": "^18.0.0",
     "react-dom": "^18.0.0"
